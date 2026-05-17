@@ -7,9 +7,11 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.abk.kernel.BuildConfig
+import com.abk.kernel.R
 import com.abk.kernel.data.model.*
 import com.abk.kernel.data.repository.GitHubRepository
 import com.abk.kernel.data.repository.PreferencesRepository
@@ -170,6 +172,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    private fun text(@StringRes resId: Int, vararg args: Any): String =
+        getApplication<Application>().getString(resId, *args)
 
     private val statusReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -530,7 +535,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         hasNativeManagerPermission = access.hasNativeManagerPermission,
                         abkRuntimeStatus = null,
                         abkRuntimeLoading = false,
-                        abkRuntimeError = runtimeError ?: "管理器未激活"
+                        abkRuntimeError = runtimeError ?: text(R.string.runtime_manager_inactive)
                     )
                 }
             }
@@ -582,7 +587,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         rootGrantApps = emptyList(),
                         rootGrantRuntimeBackend = backendAtRequest,
                         rootGrantLoading = false,
-                        rootGrantError = diagnostic ?: "管理器未激活"
+                        rootGrantError = diagnostic ?: text(R.string.runtime_manager_inactive)
                     )
                 } else {
                     it.copy(
@@ -949,7 +954,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 RootUtils.refreshRootState()
             }
             if (!hasRoot) {
-                _uiState.update { it.copy(abkRuntimeError = "操作未完成") }
+                _uiState.update { it.copy(abkRuntimeError = text(R.string.settings_operation_incomplete)) }
                 return@launch
             }
             val module = _uiState.value.abkRuntimeStatus?.modules?.firstOrNull { it.id == cleanId }
@@ -972,7 +977,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         abkRuntimeModuleActionId = null,
-                        abkRuntimeError = "操作未完成"
+                        abkRuntimeError = text(R.string.settings_operation_incomplete)
                     )
                 }
             } else {
@@ -991,7 +996,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 RootUtils.refreshRootState()
             }
             if (!hasRoot) {
-                _uiState.update { it.copy(abkRuntimeError = "操作未完成") }
+                _uiState.update { it.copy(abkRuntimeError = text(R.string.settings_operation_incomplete)) }
                 return@launch
             }
             val module = _uiState.value.abkRuntimeStatus?.modules?.firstOrNull { it.id == cleanId }
@@ -1013,7 +1018,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         abkRuntimeModuleActionId = null,
-                        abkRuntimeError = "操作未完成"
+                        abkRuntimeError = text(R.string.settings_operation_incomplete)
                     )
                 }
             } else {
@@ -1046,7 +1051,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 state.copy(
                     abkRuntimeModuleActionId = null,
                     abkRuntimeModuleActionOutput = output,
-                    abkRuntimeError = if (result.success) null else "操作未完成"
+                    abkRuntimeError = if (result.success) null else text(R.string.settings_operation_incomplete)
                 )
             }
         }
@@ -1400,7 +1405,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update { it.copy(buildQueueProcessing = true, isLoading = true, error = null) }
                 val wfId = ensureBuildWorkflowEnabled(username, repoName, reportError = true)
                 if (wfId == null) {
-                    markBuildQueueItemFailed(next.id, "无法确认构建工作流")
+                    markBuildQueueItemFailed(next.id, text(R.string.build_workflow_required))
                     return@launch
                 }
 
@@ -1410,7 +1415,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.update {
                     it.copy(
                         buildStatus = BuildStatus.QUEUED,
-                        buildProgress = BuildProgress(percent = 0, currentStep = "正在提交队列中的构建")
+                        buildProgress = BuildProgress(percent = 0, currentStep = text(R.string.build_queue_dispatching))
                     )
                 }
                 val previousRunId = when (val prior = github.listRecentRuns(username, repoName, 1, wfId)) {
@@ -1422,7 +1427,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _uiState.update {
                             it.copy(
                                 buildStatus = BuildStatus.QUEUED,
-                                buildProgress = BuildProgress(percent = 0, currentStep = "构建已排队")
+                                buildProgress = BuildProgress(percent = 0, currentStep = text(R.string.build_queued))
                             )
                         }
                         delay(5000)
@@ -1485,7 +1490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 status = BuildStatus.QUEUED,
                                 progress = BuildProgress(
                                     percent = 0,
-                                    currentStep = "构建已排队",
+                                    currentStep = text(R.string.build_queued),
                                     completedSteps = 0,
                                     totalSteps = 1
                                 )
@@ -2346,7 +2351,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.getOrElse { error ->
                 ManagerSettingsLoad(
-                    error = error.message?.takeIf { it.isNotBlank() } ?: "后端设置读取失败"
+                    error = error.message?.takeIf { it.isNotBlank() } ?: text(R.string.settings_manager_load_failed)
                 )
             }
             _uiState.update {
@@ -2404,7 +2409,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         managerSettingActionId = null,
                         managerSettingsError = result.output.lastOrNull()?.takeIf { line -> line.isNotBlank() }
-                            ?: "操作未完成"
+                            ?: text(R.string.settings_operation_incomplete)
                     )
                 }
             }
@@ -2439,7 +2444,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         managerSettingActionId = null,
                         managerSettingsError = result.output.lastOrNull()?.takeIf { line -> line.isNotBlank() }
-                            ?: "操作未完成"
+                            ?: text(R.string.settings_operation_incomplete)
                     )
                 }
             }
@@ -2474,7 +2479,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     managerAccessError = null,
                     hasNativeManagerPermission = true,
                     managerToolsLoading = false,
-                    selinuxModeText = mode.ifBlank { "未知" },
+                    selinuxModeText = mode.ifBlank { text(R.string.settings_unknown) },
                     selinuxEnforcing = mode.equals("Enforcing", ignoreCase = true),
                     umountPaths = if (pathsResult.success) {
                         pathsResult.output.map { line -> line.trim() }.filter { line -> line.isNotBlank() }
@@ -2633,7 +2638,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         managerAccessError = null,
                         hasNativeManagerPermission = true,
                         appProfileTemplatesLoading = false,
-                        appProfileTemplatesError = result.output.lastOrNull() ?: "模板列表读取失败"
+                        appProfileTemplatesError = result.output.lastOrNull() ?: text(R.string.settings_manager_load_failed)
                     )
                 }
             }
@@ -2777,7 +2782,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }.getOrElse { error ->
             ManagerSettingsLoad(
-                error = error.message?.takeIf { it.isNotBlank() } ?: "后端设置读取失败"
+                error = error.message?.takeIf { it.isNotBlank() } ?: text(R.string.settings_manager_load_failed)
             )
         }
 
@@ -2799,8 +2804,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             add(
                 ManagerSettingItem(
                     id = MANAGER_SETTING_APP_PROFILE_TEMPLATES,
-                    title = "App Profile 模板",
-                    subtitle = "管理本地 App Profile 模板",
+                    title = text(R.string.settings_app_profile_templates),
+                    subtitle = text(R.string.settings_app_profile_templates_desc),
                     kind = ManagerSettingKind.NAVIGATION
                 )
             )
@@ -2940,8 +2945,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             add(
                 ManagerSettingItem(
                     id = MANAGER_SETTING_APP_PROFILE_TEMPLATES,
-                    title = "App Profile 模板",
-                    subtitle = "管理本地和在线的 App Profile 模板",
+                    title = text(R.string.settings_app_profile_templates),
+                    subtitle = text(R.string.settings_app_profile_templates_full_desc),
                     kind = ManagerSettingKind.NAVIGATION
                 )
             )
@@ -2949,8 +2954,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 add(
                     ManagerSettingItem(
                         id = MANAGER_SETTING_TOOLS,
-                        title = "工具",
-                        subtitle = "更多高级功能",
+                        title = text(R.string.settings_tools),
+                        subtitle = text(R.string.settings_tools_desc),
                         kind = ManagerSettingKind.NAVIGATION
                     )
                 )
