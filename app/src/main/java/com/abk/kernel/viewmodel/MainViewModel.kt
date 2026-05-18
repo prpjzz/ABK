@@ -4185,6 +4185,7 @@ private const val SUMMARY_LABEL_VIRTUALIZATION = "\u865a\u62df\u5316\u652f\u6301
 private const val SUMMARY_LABEL_CUSTOM_INJECTION = "\u81ea\u5b9a\u4e49\u6ce8\u5165"
 private const val SUMMARY_VALUE_DEFAULT_ZH = "\u9ed8\u8ba4"
 private const val SUMMARY_VALUE_NONE_ZH = "\u65e0"
+private const val SUMMARY_VALUE_SET_ZH = "\u5df2\u8bbe\u7f6e"
 private const val PREBUILT_TERM_ZH = "\u9884\u7f16\u8bd1"
 private const val KERNEL_IMAGE_TERM_ZH = "\u5185\u6838\u955c\u50cf"
 private const val FLASH_PACKAGE_TERM_ZH = "\u5237\u5199\u5305"
@@ -4195,9 +4196,9 @@ internal fun parseBuildParameterSummary(
     logs: String,
     runId: Long,
     run: WorkflowRun?,
-    emptyValue: String = "None",
-    defaultValue: String = "Default",
-    setValue: String = "Set"
+    emptyValue: String = SUMMARY_VALUE_NONE_ZH,
+    defaultValue: String = SUMMARY_VALUE_DEFAULT_ZH,
+    setValue: String = SUMMARY_VALUE_SET_ZH
 ): BuildParameterSummary? {
     val values = mutableMapOf<String, String>()
     var summarySeen = false
