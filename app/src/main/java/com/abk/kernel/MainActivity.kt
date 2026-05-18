@@ -71,6 +71,8 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -466,7 +468,14 @@ private fun AbkMainScaffold(
                                 )
                             },
                             label = {
-                                Text(text = tab.displayLabel(state.rootGranted))
+                                Text(
+                                    text = tab.displayLabel(state.rootGranted),
+                                    maxLines = 2,
+                                    softWrap = true,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
                             }
                         )
                     }
