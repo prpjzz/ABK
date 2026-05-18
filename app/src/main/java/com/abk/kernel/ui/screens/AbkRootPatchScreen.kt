@@ -151,6 +151,7 @@ fun AbkRootPatchScreen(
             )
     }
     var selectedKmi by rememberSaveable { mutableStateOf(currentKmi.orEmpty()) }
+    var hasCustomKmiSelection by rememberSaveable { mutableStateOf(false) }
     val selectedAsset = bundledAssets.firstOrNull {
         it.variantId == selectedVariant && it.kmi == selectedKmi
     }
@@ -218,9 +219,15 @@ fun AbkRootPatchScreen(
     val localLkmSubtitle = selectedLocalLkmName.ifBlank { currentBuiltinLkm ?: localLkmDesc }
     val activeLkmLogLabel = activeLkmLabel.ifBlank { lkmFallbackLabel }
 
-    LaunchedEffect(selectedVariant, kmiOptions, currentKmi) {
-        if (selectedKmi !in kmiOptions) {
-            selectedKmi = currentKmi?.takeIf { it in kmiOptions } ?: kmiOptions.firstOrNull().orEmpty()
+    LaunchedEffect(selectedVariant, kmiOptions, currentKmi, hasCustomKmiSelection) {
+        val preferredKmi = preferredLkmKmiSelection(
+            currentSelection = selectedKmi,
+            options = kmiOptions,
+            recommendedKmi = currentKmi,
+            hasCustomSelection = hasCustomKmiSelection
+        )
+        if (selectedKmi != preferredKmi) {
+            selectedKmi = preferredKmi
         }
     }
 
@@ -612,6 +619,8 @@ fun AbkRootPatchScreen(
                                     selected = selectedVariant == variant.id,
                                     onClick = {
                                         selectedVariant = variant.id
+                                        selectedKmi = ""
+                                        hasCustomKmiSelection = false
                                         patchedImagePath = ""
                                         success = null
                                         currentAction = ""
@@ -630,6 +639,7 @@ fun AbkRootPatchScreen(
                             onSelect = {
                                 if (it in kmiOptions) {
                                     selectedKmi = it
+                                    hasCustomKmiSelection = true
                                     patchedImagePath = ""
                                     success = null
                                     currentAction = ""
@@ -1027,6 +1037,24 @@ private fun partitionMenuLabel(
     } else {
         partition
     }
+
+internal fun preferredLkmKmiSelection(
+    currentSelection: String,
+    options: List<String>,
+    recommendedKmi: String?,
+    hasCustomSelection: Boolean
+): String {
+    if (options.isEmpty()) return ""
+
+    val current = currentSelection.takeIf { it in options }
+    val recommended = recommendedKmi?.takeIf { it in options }
+    return when {
+        hasCustomSelection && current != null -> current
+        recommended != null -> recommended
+        current != null -> current
+        else -> options.first()
+    }
+}
 
 private fun String.defaultLkmVariantId(): String {
     val lower = lowercase()
