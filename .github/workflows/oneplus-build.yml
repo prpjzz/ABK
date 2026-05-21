@@ -293,9 +293,6 @@ jobs:
               Official)
                 curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
                 ;;
-              Next)
-                curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-                ;;
               SukiSU)
                 curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s builtin
                 ;;
@@ -325,12 +322,12 @@ jobs:
             bash setup-bbg.sh
           fi
 
+          cp "$WORKSPACE/kernel_patches/zram_patches/001-lz4.patch" "$COMMON_ROOT/"
+          cp "$WORKSPACE/kernel_patches/zram_patches/lz4armv8.S" "$COMMON_ROOT/lib/"
+          cp "$WORKSPACE/kernel_patches/zram_patches/002-zstd.patch" "$COMMON_ROOT/"
+
           cd "$KERNEL_ROOT"
           if [ "$EFFECTIVE_USE_LZ4KD" = "true" ]; then
-            mkdir -p "$COMMON_ROOT/lib/lz4"
-            cp -r "$GITHUB_WORKSPACE/zram/lz4/." "$COMMON_ROOT/lib/lz4/"
-            cp -r "$GITHUB_WORKSPACE/zram/include/linux/"* "$COMMON_ROOT/include/linux/" || true
-            (cd "$COMMON_ROOT" && bash "$GITHUB_WORKSPACE/zram/apply_lz4_neon.sh")
             cp -r "$WORKSPACE"/SukiSU_patch/other/zram/lz4k/include/linux/* "$COMMON_ROOT/include/linux/" || true
             cp -r "$WORKSPACE"/SukiSU_patch/other/zram/lz4k/lib/* "$COMMON_ROOT/lib/" || true
             cp -r "$WORKSPACE"/SukiSU_patch/other/zram/lz4k/crypto/* "$COMMON_ROOT/crypto/" || true
@@ -343,7 +340,7 @@ jobs:
             cp "$WORKSPACE/susfs4oki/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" "$COMMON_ROOT/" || true
             cp "$WORKSPACE"/susfs4oki/kernel_patches/fs/* "$COMMON_ROOT/fs/" || true
             cp "$WORKSPACE"/susfs4oki/kernel_patches/include/linux/* "$COMMON_ROOT/include/linux/" || true
-          elif [ "$KSU_VARIANT" = "SukiSU" ] || [ "$KSU_VARIANT" = "ReSukiSU" ] || [ "$KSU_VARIANT" = "Next" ]; then
+          elif [ "$KSU_VARIANT" = "SukiSU" ] || [ "$KSU_VARIANT" = "ReSukiSU" ]; then
             cp "$WORKSPACE/kernel_patches/sukisu/scope_min_manual_hooks_v1.9.patch" "$COMMON_ROOT/" || \
               cp "$WORKSPACE/kernel_patches/sukisu/scope_min_manual_hooks_v1.6.patch" "$COMMON_ROOT/" || true
           fi
@@ -363,6 +360,11 @@ jobs:
           if [ "$EFFECTIVE_USE_LZ4KD" = "true" ]; then
             [ -f lz4kd.patch ] && patch -p1 < lz4kd.patch || true
             [ -f lz4k_oplus.patch ] && patch -p1 < lz4k_oplus.patch || true
+          elif [ "$KERNEL_VERSION" = "6.1" ]; then
+            [ -f 001-lz4.patch ] && git apply -p1 < 001-lz4.patch || true
+            [ -f 002-zstd.patch ] && patch -p1 < 002-zstd.patch || true
+          elif [ "$KERNEL_VERSION" = "6.6" ]; then
+            [ -f 001-lz4.patch ] && git apply -p1 < 001-lz4.patch || true
           fi
           if [ "$EFFECTIVE_ENABLE_SUSFS" = "true" ]; then
             [ -f "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" ] && \
