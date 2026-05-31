@@ -231,6 +231,200 @@ long __nocfi ksu_hook_faccessat'''
     write_if_changed(path, text, original, changed_files)
 
 
+def patch_symbol_resolver(path, changed_files):
+    original = path.read_text()
+    text = original
+
+    old = r'''void *ksu_resolve_symbol_for_functable_hook(const char *symbol_name)
+{
+    void *addr;
+    size_t symbol_len;
+
+    if (!symbol_name || !symbol_name[0])
+        return NULL;
+
+    symbol_len = strlen(symbol_name);
+
+    // Prefer find_kernel_symbol_exact since it uses binary search in higher kernel version
+
+#if !USE_KCFI
+    // Try .cfi_jt suffix first
+    char cfi_name[KSYM_NAME_LEN];
+    snprintf(cfi_name, sizeof(cfi_name), "%s.cfi_jt", symbol_name);
+    addr = (void *)find_kernel_symbol_exact(cfi_name);
+    if (addr)
+        return addr;
+
+    addr = resolve_symbol_variant(symbol_name, symbol_len);
+    if (addr)
+        return addr;
+
+    return (void *)find_kernel_symbol_exact(symbol_name);
+#else
+    addr = (void *)find_kernel_symbol_exact(symbol_name);
+    if (addr)
+        return addr;
+
+    return resolve_symbol_variant(symbol_name, symbol_len);
+#endif
+}'''
+    new = r'''void *ksu_resolve_symbol_for_functable_hook(const char *symbol_name)
+{
+    void *addr;
+    size_t symbol_len;
+    bool selinux_setprocattr_fallback = false;
+
+    if (!symbol_name || !symbol_name[0])
+        return NULL;
+
+    symbol_len = strlen(symbol_name);
+    selinux_setprocattr_fallback = !strcmp(symbol_name, "selinux_setprocattr");
+
+    // Prefer find_kernel_symbol_exact since it uses binary search in higher kernel version
+
+#if !USE_KCFI
+    // Try .cfi_jt suffix first
+    char cfi_name[KSYM_NAME_LEN];
+    snprintf(cfi_name, sizeof(cfi_name), "%s.cfi_jt", symbol_name);
+    addr = (void *)find_kernel_symbol_exact(cfi_name);
+    if (addr)
+        return addr;
+
+    if (selinux_setprocattr_fallback) {
+        snprintf(cfi_name, sizeof(cfi_name), "%s.cfi_jt", "security_setprocattr");
+        addr = (void *)find_kernel_symbol_exact(cfi_name);
+        if (addr) {
+            pr_info("%s: resolved fallback %s via .cfi_jt\n", __func__, "security_setprocattr");
+            return addr;
+        }
+    }
+
+    addr = resolve_symbol_variant(symbol_name, symbol_len);
+    if (addr)
+        return addr;
+
+    addr = (void *)find_kernel_symbol_exact(symbol_name);
+    if (addr)
+        return addr;
+
+    if (selinux_setprocattr_fallback) {
+        addr = resolve_symbol_variant("security_setprocattr", strlen("security_setprocattr"));
+        if (addr) {
+            pr_info("%s: resolved fallback %s via variant lookup\n", __func__, "security_setprocattr");
+            return addr;
+        }
+
+        addr = (void *)find_kernel_symbol_exact("security_setprocattr");
+        if (addr) {
+            pr_info("%s: resolved fallback %s via exact lookup\n", __func__, "security_setprocattr");
+            return addr;
+        }
+    }
+
+    return NULL;
+#else
+    addr = (void *)find_kernel_symbol_exact(symbol_name);
+    if (addr)
+        return addr;
+
+    if (selinux_setprocattr_fallback) {
+        addr = (void *)find_kernel_symbol_exact("security_setprocattr");
+        if (addr) {
+            pr_info("%s: resolved fallback %s via exact lookup\n", __func__, "security_setprocattr");
+            return addr;
+        }
+    }
+
+    addr = resolve_symbol_variant(symbol_name, symbol_len);
+    if (addr)
+        return addr;
+
+    if (selinux_setprocattr_fallback) {
+        addr = resolve_symbol_variant("security_setprocattr", strlen("security_setprocattr"));
+        if (addr) {
+            pr_info("%s: resolved fallback %s via variant lookup\n", __func__, "security_setprocattr");
+            return addr;
+        }
+    }
+
+    return NULL;
+#endif
+}
+
+/* ABK: fallback selinux_setprocattr to security_setprocattr for SukiSU selinux_hide. */'''
+    text = replace_or_confirm(
+        text,
+        old,
+        new,
+        "ABK: fallback selinux_setprocattr to security_setprocattr for SukiSU selinux_hide.",
+        "symbol_resolver selinux_setprocattr fallback",
+    )
+
+    write_if_changed(path, text, original, changed_files)
+
+
+def patch_lsm_hook(path, changed_files):
+    original = path.read_text()
+    text = original
+
+    marker = "ABK: prefer selinux slot for setprocattr hook patching."
+    if marker not in text:
+        text = text.replace(
+            '    pr_info("target: 0x%lx %pSb\\n", (unsigned long)target, target);\n',
+            '    pr_info("target: 0x%lx %pSb\\n", (unsigned long)target, target);\n'
+            '\n'
+            '    bool prefer_selinux_slot =\n'
+            '        !strcmp(hook->head_name ?: "", "setprocattr") && !strcmp(target_name, "selinux_setprocattr");\n'
+            '    /* ABK: prefer selinux slot for setprocattr hook patching. */\n',
+            1,
+        )
+
+        text = text.replace(
+            "        if (current_origin != target) {\n"
+            "            continue;\n"
+            "        }\n",
+            "        if (prefer_selinux_slot) {\n"
+            "            if (!entry->lsm || strcmp(entry->lsm, \"selinux\"))\n"
+            "                continue;\n"
+            "        } else if (current_origin != target) {\n"
+            "            continue;\n"
+            "        }\n",
+            1,
+        )
+
+        text = text.replace(
+            "            if (current_origin == target) {\n"
+            "                pr_info(\"found %s (target %s) at head offset %ld (provided %ld)\\n\", hook->head_name, hook->target_name,\n"
+            "                        (unsigned long)head - heads_addr, hook->head_offset);\n"
+            "                selected_entry = entry;\n"
+            "                selected_slot = slot;\n"
+            "                selected_origin = current_origin;\n"
+            "                break;\n"
+            "            }\n",
+            "            if (prefer_selinux_slot) {\n"
+            "                if (!entry->lsm || strcmp(entry->lsm, \"selinux\"))\n"
+            "                    continue;\n"
+            "                pr_info(\"found %s selinux slot at head offset %ld (provided %ld)\\n\", hook->head_name,\n"
+            "                        (unsigned long)head - heads_addr, hook->head_offset);\n"
+            "                selected_entry = entry;\n"
+            "                selected_slot = slot;\n"
+            "                selected_origin = current_origin;\n"
+            "                break;\n"
+            "            }\n"
+            "            if (current_origin == target) {\n"
+            "                pr_info(\"found %s (target %s) at head offset %ld (provided %ld)\\n\", hook->head_name, hook->target_name,\n"
+            "                        (unsigned long)head - heads_addr, hook->head_offset);\n"
+            "                selected_entry = entry;\n"
+            "                selected_slot = slot;\n"
+            "                selected_origin = current_origin;\n"
+            "                break;\n"
+            "            }\n",
+            1,
+        )
+
+    write_if_changed(path, text, original, changed_files)
+
+
 def patch_runtime(path, changed_files):
     original = path.read_text()
     text = original
@@ -399,6 +593,41 @@ def patch_selinux_hide(path, changed_files):
         "static bool ksu_selinux_hide_running __read_mostly = false;",
         "bool ksu_selinux_hide_running __read_mostly = false;",
     )
+    text = text.replace(
+        "static bool ksu_selinux_hide_enabled __read_mostly = false;",
+        "bool ksu_selinux_hide_enabled __read_mostly = false;",
+    )
+    text = text.replace(
+        "static DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);",
+        "DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);",
+    )
+    text = text.replace(
+        "static struct page *fake_status = NULL;",
+        "struct page *fake_status = NULL;",
+    )
+    text = re.sub(
+        r"(?m)^static void initialize_fake_status\s*\(\s*(?:void)?\s*\)",
+        "void initialize_fake_status(void)",
+        text,
+    )
+    if "DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key)" not in text:
+        if "jump_label.h" not in text:
+            text = ensure_include(text, "#include <linux/jump_label.h>", "#include <linux/mutex.h>\n")
+        anchor = "bool ksu_selinux_hide_running __read_mostly = false;\n"
+        if anchor not in text:
+            die(f"missing selinux_hide fake status anchor: {path}")
+        block = r'''
+
+#ifdef CONFIG_KSU_SUSFS
+DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
+struct page *fake_status = NULL;
+
+void initialize_fake_status(void)
+{
+}
+#endif
+'''
+        text = text.replace(anchor, anchor + block, 1)
     text = text.replace(
         "static int security_context_to_sid_with_policy(",
         "int security_context_to_sid_with_policy(",
@@ -661,6 +890,16 @@ def verify(ksu_dir):
             "void ksu_handle_sys_read(unsigned int fd)",
             "void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)",
         ),
+        ksu_dir / "infra/symbol_resolver.c": (
+            "ABK: fallback selinux_setprocattr to security_setprocattr for SukiSU selinux_hide.",
+            'selinux_setprocattr_fallback = !strcmp(symbol_name, "selinux_setprocattr")',
+            '"security_setprocattr",',
+        ),
+        ksu_dir / "hook/lsm_hook.c": (
+            "ABK: prefer selinux slot for setprocattr hook patching.",
+            'prefer_selinux_slot =',
+            'entry->lsm, "selinux"',
+        ),
         ksu_dir / "feature/sucompat.c": (
             "DEFINE_STATIC_KEY_TRUE(ksu_su_compat_enabled)",
             "int ksu_handle_execveat_sucompat",
@@ -674,7 +913,11 @@ def verify(ksu_dir):
         ),
         ksu_dir / "feature/selinux_hide.c": (
             "struct selinux_state fake_state;",
+            "DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key)",
+            "struct page *fake_status",
+            "bool ksu_selinux_hide_enabled __read_mostly",
             "bool ksu_selinux_hide_running __read_mostly",
+            "void initialize_fake_status(",
             "int security_context_to_sid_with_policy(",
             "int security_sid_to_context_with_policy(",
         ),
@@ -713,6 +956,8 @@ def main():
 
     patch_sucompat_header(ksu_dir / "feature/sucompat.h", changed_files)
     patch_sucompat_c(ksu_dir / "feature/sucompat.c", changed_files)
+    patch_symbol_resolver(ksu_dir / "infra/symbol_resolver.c", changed_files)
+    patch_lsm_hook(ksu_dir / "hook/lsm_hook.c", changed_files)
     patch_syscall_bridge(ksu_dir / "hook/syscall_event_bridge.c", changed_files)
     patch_runtime(ksu_dir / "runtime/ksud_integration.c", changed_files)
     patch_selinux_hide(ksu_dir / "feature/selinux_hide.c", changed_files)
