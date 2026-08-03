@@ -5,7 +5,10 @@ package com.abk.kernel.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateContentSize
@@ -16,8 +19,11 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
@@ -40,6 +46,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.abk.kernel.R
 import com.abk.kernel.data.model.BuildPlan
@@ -53,6 +60,8 @@ import com.abk.kernel.data.model.BUILD_TARGET_ONEPLUS
 import com.abk.kernel.data.model.CustomExternalModule
 import com.abk.kernel.data.model.CustomExternalModuleEntryKind
 import com.abk.kernel.data.model.CustomExternalModuleStage
+import com.abk.kernel.data.model.CustomKernelOption
+import com.abk.kernel.data.model.CustomKernelOptionMode
 import com.abk.kernel.data.model.ExternalModuleMetadata
 import com.abk.kernel.data.model.KernelSupport
 import com.abk.kernel.data.model.KernelBuildConfig
@@ -89,7 +98,11 @@ import com.abk.kernel.ui.theme.appPageBackgroundColor
 import com.abk.kernel.ui.theme.uiSurfaceColor
 import com.abk.kernel.viewmodel.BuildPlanImportPreview
 import com.abk.kernel.viewmodel.BuildPlanShareScope
+import com.abk.kernel.viewmodel.CustomKernelOptionSummary
+import com.abk.kernel.viewmodel.CustomKernelOptionsImportResult
 import com.abk.kernel.viewmodel.MainViewModel
+import com.abk.kernel.viewmodel.summarizeCustomKernelOptions
+import com.abk.kernel.viewmodel.toWorkflowLine
 import coil.compose.AsyncImage
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
@@ -147,11 +160,23 @@ fun BuildScreen(
     var showImportPlanDialog by remember { mutableStateOf(false) }
     var showPlanLibraryPage by rememberSaveable { mutableStateOf(false) }
     var showBuildQueuePage by rememberSaveable { mutableStateOf(false) }
+    var showKernelOptionsPage by rememberSaveable { mutableStateOf(false) }
     var planToolsExpanded by rememberSaveable { mutableStateOf(false) }
     var savePlanName by remember { mutableStateOf("") }
     var importPlanCode by remember { mutableStateOf("") }
     var importPlanPreview by remember { mutableStateOf<BuildPlanImportPreview?>(null) }
     var importPlanError by remember { mutableStateOf<String?>(null) }
+    var showKernelOptionImportDialog by remember { mutableStateOf(false) }
+    var kernelOptionImportText by remember { mutableStateOf("") }
+    var kernelOptionImportSummary by remember { mutableStateOf<String?>(null) }
+    var kernelOptionImportError by remember { mutableStateOf<String?>(null) }
+    var showKernelOptionEditorDialog by remember { mutableStateOf(false) }
+    var editingKernelOptionIndex by remember { mutableStateOf<Int?>(null) }
+    var editingKernelOption by remember { mutableStateOf(CustomKernelOption()) }
+    var kernelOptionSearchQuery by rememberSaveable { mutableStateOf("") }
+    var showKernelOptionActionMenu by remember { mutableStateOf(false) }
+    var showClearKernelOptionsDialog by remember { mutableStateOf(false) }
+    var clearAllKernelOptions by rememberSaveable { mutableStateOf(false) }
     var sharePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
     var renamePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
     var renamePlanName by remember { mutableStateOf("") }
@@ -168,6 +193,19 @@ fun BuildScreen(
     var editingModuleSetStageSelections by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
     var removingCustomModuleKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     val coroutineScope = rememberCoroutineScope()
+    val kernelOptionFilePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        coroutineScope.launch {
+            runCatching { vm.loadCustomKernelOptionsFromUri(uri) }
+                .onSuccess {
+                    kernelOptionImportText = it
+                    kernelOptionImportError = null
+                }
+                .onFailure {
+                    kernelOptionImportError = it.message ?: context.getString(R.string.build_kernel_option_import_read_failed)
+                }
+        }
+    }
     val catalogModules = remember(state.buildModuleRepositories) {
         mergeBuildCatalogModules(state.buildModuleRepositories)
     }
@@ -177,7 +215,30 @@ fun BuildScreen(
     val customModuleGroups = remember(config.customExternalModules, catalogModuleByUrl) {
         groupBuildCustomExternalModules(config.customExternalModules, catalogModuleByUrl)
     }
-    val childPageVisible = showPlanLibraryPage || showBuildQueuePage
+    val kernelOptionSummary = summarizeCustomKernelOptions(config.customKernelOptions)
+    val kernelOptionModeEnabledYLabel = stringResource(R.string.build_kernel_option_mode_y)
+    val kernelOptionModeEnabledMLabel = stringResource(R.string.build_kernel_option_mode_m)
+    val kernelOptionModeDisabledLabel = stringResource(R.string.build_kernel_option_mode_disabled)
+    val kernelOptionModeIgnoreLabel = stringResource(R.string.build_kernel_option_mode_ignore)
+    val kernelOptionModeRawLabel = stringResource(R.string.build_kernel_option_mode_raw)
+    val filteredKernelOptions = config.customKernelOptions
+        .mapIndexed { index, option -> IndexedValue(index, option) }
+        .filter { indexed ->
+            val query = kernelOptionSearchQuery.trim().lowercase(Locale.ROOT)
+            query.isBlank() || buildCustomKernelOptionSearchText(
+                option = indexed.value,
+                enabledYLabel = kernelOptionModeEnabledYLabel,
+                enabledMLabel = kernelOptionModeEnabledMLabel,
+                disabledLabel = kernelOptionModeDisabledLabel,
+                ignoreLabel = kernelOptionModeIgnoreLabel,
+                rawLabel = kernelOptionModeRawLabel
+            ).contains(query)
+        }
+    val filteredKernelOptionIndices = filteredKernelOptions.map { it.index }
+    val canToggleKernelOptionClearAll = kernelOptionSearchQuery.isNotBlank() &&
+        filteredKernelOptions.size != config.customKernelOptions.size
+    val clearAllKernelOptionsTarget = !canToggleKernelOptionClearAll || clearAllKernelOptions
+    val childPageVisible = showPlanLibraryPage || showBuildQueuePage || showKernelOptionsPage
     val childPageTransition = rememberChildPageOverlayTransition(
         visible = childPageVisible,
         label = "build-child-page"
@@ -199,6 +260,11 @@ fun BuildScreen(
     fun closeChildPage() {
         showPlanLibraryPage = false
         showBuildQueuePage = false
+        showKernelOptionsPage = false
+        kernelOptionSearchQuery = ""
+        showKernelOptionActionMenu = false
+        showClearKernelOptionsDialog = false
+        clearAllKernelOptions = false
     }
 
     val childPageBack = rememberChildPageBackController(
@@ -216,7 +282,23 @@ fun BuildScreen(
     fun openBuildQueuePage() {
         childPageBack.resetProgress()
         showPlanLibraryPage = false
+        showKernelOptionsPage = false
+        kernelOptionSearchQuery = ""
         showBuildQueuePage = true
+    }
+
+    fun openKernelOptionsPage() {
+        childPageBack.resetProgress()
+        showPlanLibraryPage = false
+        showBuildQueuePage = false
+        kernelOptionSearchQuery = ""
+        showKernelOptionsPage = true
+    }
+
+    LaunchedEffect(isOnePlusBuild, showKernelOptionsPage) {
+        if (isOnePlusBuild && showKernelOptionsPage) {
+            closeChildPage()
+        }
     }
 
     ObserveChildPageVisibility(
@@ -383,6 +465,15 @@ fun BuildScreen(
                                 }
                             )
                         )
+                        Text(
+                            stringResource(
+                                R.string.build_kernel_options_line,
+                                stringResource(
+                                    R.string.build_kernel_options_count,
+                                    config.customKernelOptions.size
+                                )
+                            )
+                        )
                     }
                     if (activeBuild || activeQueueCount > 0) {
                         Text(
@@ -451,6 +542,78 @@ fun BuildScreen(
                 Toast.makeText(context, context.getString(R.string.build_plan_saved_library), Toast.LENGTH_SHORT).show()
             },
             onDismiss = { showImportPlanDialog = false }
+        )
+    }
+
+    if (showKernelOptionImportDialog) {
+        ImportCustomKernelOptionsDialog(
+            text = kernelOptionImportText,
+            summary = kernelOptionImportSummary,
+            error = kernelOptionImportError,
+            onTextChange = {
+                kernelOptionImportText = it
+                kernelOptionImportSummary = null
+                kernelOptionImportError = null
+            },
+            onPickFile = { kernelOptionFilePicker.launch(arrayOf("text/*", "*/*")) },
+            onImport = {
+                runCatching { vm.importCustomKernelOptions(kernelOptionImportText) }
+                    .onSuccess { result ->
+                        kernelOptionImportSummary = formatCustomKernelImportSummary(context, result)
+                        kernelOptionImportError = null
+                    }
+                    .onFailure {
+                        kernelOptionImportError = it.message ?: context.getString(R.string.build_kernel_option_import_failed)
+                    }
+            },
+            onDismiss = { showKernelOptionImportDialog = false }
+        )
+    }
+
+    if (showKernelOptionEditorDialog) {
+        EditCustomKernelOptionDialog(
+            option = editingKernelOption,
+            isEditing = editingKernelOptionIndex != null,
+            onOptionChange = { editingKernelOption = it },
+            onDismiss = {
+                showKernelOptionEditorDialog = false
+                editingKernelOptionIndex = null
+                editingKernelOption = CustomKernelOption()
+            },
+            onConfirm = {
+                runCatching { vm.upsertCustomKernelOption(editingKernelOption, editingKernelOptionIndex) }
+                    .onSuccess {
+                        showKernelOptionEditorDialog = false
+                        editingKernelOptionIndex = null
+                        editingKernelOption = CustomKernelOption()
+                    }
+                    .onFailure {
+                        Toast.makeText(context, it.message ?: context.getString(R.string.build_kernel_option_save_failed), Toast.LENGTH_SHORT).show()
+                    }
+            }
+        )
+    }
+
+    if (showClearKernelOptionsDialog) {
+        ClearCustomKernelOptionsDialog(
+            totalCount = config.customKernelOptions.size,
+            filteredCount = filteredKernelOptions.size,
+            canToggleClearAll = canToggleKernelOptionClearAll,
+            clearAll = clearAllKernelOptions,
+            onClearAllChange = { clearAllKernelOptions = it },
+            onDismiss = {
+                showClearKernelOptionsDialog = false
+                clearAllKernelOptions = false
+            },
+            onConfirm = {
+                if (clearAllKernelOptionsTarget) {
+                    vm.clearCustomKernelOptions()
+                } else {
+                    vm.removeCustomKernelOptions(filteredKernelOptionIndices)
+                }
+                showClearKernelOptionsDialog = false
+                clearAllKernelOptions = false
+            }
         )
     }
 
@@ -1338,6 +1501,27 @@ fun BuildScreen(
                 }
             }
 
+            if (!isOnePlusBuild) {
+                SectionCard(
+                    section = BuildSection.CustomKernelOptions,
+                    modifier = Modifier.clickable(onClick = ::openKernelOptionsPage),
+                    subtitle = buildCustomKernelOptionSummaryText(kernelOptionSummary),
+                    trailingContent = {
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                ) {
+                    Text(
+                        text = stringResource(R.string.build_section_kernel_options_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             AnimatedVisibility(!isOnePlusBuild && config.useZram) {
                 SectionCard(section = BuildSection.ZramOptions) {
                     SwitchRow(stringResource(R.string.build_zram_full_algo), config.zramFullAlgo) {
@@ -1663,14 +1847,63 @@ fun BuildScreen(
                     containerColor = Color.Transparent,
                     topBar = {
                         ExpressiveTopBar(
-                            title = if (showBuildQueuePage) {
-                                stringResource(R.string.build_queue_title)
-                            } else {
-                                stringResource(R.string.build_plan_library)
+                            title = when {
+                                showBuildQueuePage -> stringResource(R.string.build_queue_title)
+                                showKernelOptionsPage -> stringResource(R.string.build_kernel_options_title)
+                                else -> stringResource(R.string.build_plan_library)
                             },
                             navigationIcon = {
                                 IconButton(onClick = childPageBack::requestDismiss) {
                                     Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.build_back_to_config))
+                                }
+                            },
+                            actions = {
+                                if (showKernelOptionsPage) {
+                                    Box {
+                                        IconButton(onClick = { showKernelOptionActionMenu = true }) {
+                                            Icon(
+                                                Icons.Default.Add,
+                                                contentDescription = stringResource(R.string.build_kernel_option_menu)
+                                            )
+                                        }
+                                        DropdownMenu(
+                                            expanded = showKernelOptionActionMenu,
+                                            onDismissRequest = { showKernelOptionActionMenu = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.build_kernel_option_add)) },
+                                                onClick = {
+                                                    showKernelOptionActionMenu = false
+                                                    showKernelOptionEditorDialog = true
+                                                    editingKernelOptionIndex = null
+                                                    editingKernelOption = CustomKernelOption()
+                                                },
+                                                leadingIcon = { Icon(Icons.Default.Add, null) }
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text(stringResource(R.string.build_import)) },
+                                                onClick = {
+                                                    showKernelOptionActionMenu = false
+                                                    showKernelOptionImportDialog = true
+                                                    kernelOptionImportError = null
+                                                    kernelOptionImportSummary = null
+                                                },
+                                                leadingIcon = { Icon(Icons.Default.Download, null) }
+                                            )
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            clearAllKernelOptions = false
+                                            showClearKernelOptionsDialog = true
+                                        },
+                                        enabled = config.customKernelOptions.isNotEmpty()
+                                    ) {
+                                        Icon(
+                                            Icons.Default.DeleteSweep,
+                                            contentDescription = stringResource(R.string.build_kernel_option_clear)
+                                        )
+                                    }
                                 }
                             }
                         )
@@ -1692,6 +1925,21 @@ fun BuildScreen(
                             modifier = Modifier
                                 .padding(padding)
                                 .fillMaxSize()
+                        )
+                    } else if (showKernelOptionsPage) {
+                        BuildKernelOptionsPage(
+                            padding = padding,
+                            options = filteredKernelOptions,
+                            summary = kernelOptionSummary,
+                            searchQuery = kernelOptionSearchQuery,
+                            onSearchQueryChange = { kernelOptionSearchQuery = it },
+                            onEditOption = { index, option ->
+                                showKernelOptionEditorDialog = true
+                                editingKernelOptionIndex = index
+                                editingKernelOption = option
+                            },
+                            onDeleteOption = vm::removeCustomKernelOption,
+                            bottomPadding = outerPadding.calculateBottomPadding()
                         )
                     } else {
                         BuildPlanLibraryPage(
@@ -2298,6 +2546,379 @@ private fun BuildQueueItemStatus.isTerminalQueueStatus(): Boolean =
     this in setOf(BuildQueueItemStatus.DONE, BuildQueueItemStatus.FAILED, BuildQueueItemStatus.CANCELLED)
 
 @Composable
+private fun ImportCustomKernelOptionsDialog(
+    text: String,
+    summary: String?,
+    error: String?,
+    onTextChange: (String) -> Unit,
+    onPickFile: () -> Unit,
+    onImport: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Tune, null) },
+        title = { Text(stringResource(R.string.build_kernel_option_import_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = stringResource(R.string.build_kernel_option_import_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    label = { Text(stringResource(R.string.build_kernel_option_import_text)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 4,
+                    maxLines = 8
+                )
+                OutlinedButton(onClick = onPickFile, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.build_kernel_option_pick_file))
+                }
+                summary?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                error?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onImport, enabled = text.isNotBlank()) {
+                Text(stringResource(R.string.build_import))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun EditCustomKernelOptionDialog(
+    option: CustomKernelOption,
+    isEditing: Boolean,
+    onOptionChange: (CustomKernelOption) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val modeLabels = mapOf(
+        CustomKernelOptionMode.ENABLED_Y to stringResource(R.string.build_kernel_option_mode_y),
+        CustomKernelOptionMode.ENABLED_M to stringResource(R.string.build_kernel_option_mode_m),
+        CustomKernelOptionMode.DISABLED to stringResource(R.string.build_kernel_option_mode_disabled),
+        CustomKernelOptionMode.IGNORE to stringResource(R.string.build_kernel_option_mode_ignore),
+        CustomKernelOptionMode.RAW to stringResource(R.string.build_kernel_option_mode_raw)
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Tune, null) },
+        title = {
+            Text(
+                if (isEditing) {
+                    stringResource(R.string.build_kernel_option_edit)
+                } else {
+                    stringResource(R.string.build_kernel_option_add)
+                }
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = option.symbol,
+                    onValueChange = { onOptionChange(option.copy(symbol = it)) },
+                    label = { Text(stringResource(R.string.build_kernel_option_symbol)) },
+                    placeholder = { Text("CONFIG_EXAMPLE") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+                DropdownField(
+                    label = stringResource(R.string.build_kernel_option_mode),
+                    value = option.mode,
+                    options = CustomKernelOptionMode.options,
+                    optionLabel = { modeLabels[CustomKernelOptionMode.normalize(it)] ?: it },
+                    onSelect = { onOptionChange(option.copy(mode = it)) }
+                )
+                if (CustomKernelOptionMode.normalize(option.mode) == CustomKernelOptionMode.RAW) {
+                    OutlinedTextField(
+                        value = option.rawValue,
+                        onValueChange = { onOptionChange(option.copy(rawValue = it)) },
+                        label = { Text(stringResource(R.string.build_kernel_option_raw_value)) },
+                        placeholder = { Text(stringResource(R.string.build_kernel_option_raw_placeholder)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(stringResource(R.string.build_save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+private fun formatCustomKernelImportSummary(context: Context, result: CustomKernelOptionsImportResult): String =
+    context.getString(
+        R.string.build_kernel_option_import_summary,
+        result.importedCount,
+        result.duplicateCount,
+        result.skippedCount
+    )
+
+@Composable
+private fun BuildKernelOptionsPage(
+    padding: PaddingValues,
+    options: List<IndexedValue<CustomKernelOption>>,
+    summary: CustomKernelOptionSummary,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onEditOption: (Int, CustomKernelOption) -> Unit,
+    onDeleteOption: (Int) -> Unit,
+    bottomPadding: Dp
+) {
+    LazyColumn(
+        modifier = Modifier
+            .padding(padding)
+            .fillMaxSize()
+            .padding(horizontal = AbkScreenHorizontalPadding),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)
+    ) {
+        item(key = "search") {
+            BuildKernelOptionSearchField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange
+            )
+        }
+        item(key = "summary") {
+            Text(
+                text = buildCustomKernelOptionSummaryText(summary),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (options.isEmpty()) {
+            item(key = "empty") {
+                BuildKernelOptionsEmptyState(
+                    hasQuery = searchQuery.isNotBlank()
+                )
+            }
+        } else {
+            items(
+                items = options,
+                key = { indexed -> "${indexed.index}:${indexed.value.symbol}" }
+            ) { indexed ->
+                ExpressiveListItem(
+                    title = indexed.value.symbol,
+                    subtitle = buildCustomKernelOptionSubtitle(indexed.value),
+                    leadingIcon = Icons.Default.Tune,
+                    trailingContent = {
+                        IconButton(onClick = { onDeleteOption(indexed.index) }) {
+                            Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.delete))
+                        }
+                    },
+                    onClick = { onEditOption(indexed.index, indexed.value) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BuildKernelOptionSearchField(
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth(),
+        leadingIcon = { Icon(Icons.Default.Search, null) },
+        placeholder = { Text(stringResource(R.string.build_kernel_option_search)) },
+        singleLine = true,
+        shape = RoundedCornerShape(14.dp)
+    )
+}
+
+@Composable
+private fun BuildKernelOptionsEmptyState(
+    hasQuery: Boolean
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = if (hasQuery) {
+                stringResource(R.string.build_kernel_option_no_matching)
+            } else {
+                stringResource(R.string.build_kernel_option_empty)
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun ClearCustomKernelOptionsDialog(
+    totalCount: Int,
+    filteredCount: Int,
+    canToggleClearAll: Boolean,
+    clearAll: Boolean,
+    onClearAllChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    val clearAllTarget = !canToggleClearAll || clearAll
+    val confirmEnabled = if (clearAllTarget) {
+        totalCount > 0
+    } else {
+        filteredCount > 0
+    }
+    val message = when {
+        clearAllTarget -> stringResource(R.string.build_kernel_option_clear_all_confirm, totalCount)
+        filteredCount > 0 -> stringResource(R.string.build_kernel_option_clear_filtered_confirm, filteredCount)
+        else -> stringResource(R.string.build_kernel_option_clear_no_matching, totalCount)
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.DeleteSweep, null) },
+        title = { Text(stringResource(R.string.build_kernel_option_clear_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(message)
+                if (canToggleClearAll) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onClearAllChange(!clearAll) },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Checkbox(
+                            checked = clearAll,
+                            onCheckedChange = onClearAllChange
+                        )
+                        Text(
+                            text = stringResource(R.string.build_kernel_option_clear_toggle_all, totalCount),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = confirmEnabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Text(
+                    stringResource(
+                        if (clearAllTarget) {
+                            R.string.build_kernel_option_clear_all_action
+                        } else {
+                            R.string.build_kernel_option_clear_filtered_action
+                        }
+                    )
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun buildCustomKernelOptionSummaryText(summary: CustomKernelOptionSummary): String =
+    stringResource(
+        R.string.build_kernel_options_summary,
+        summary.total,
+        summary.enabled,
+        summary.disabled,
+        summary.ignored
+    )
+
+private fun buildCustomKernelOptionSearchText(
+    option: CustomKernelOption,
+    enabledYLabel: String,
+    enabledMLabel: String,
+    disabledLabel: String,
+    ignoreLabel: String,
+    rawLabel: String
+): String {
+    val modeLabel = when (CustomKernelOptionMode.normalize(option.mode)) {
+        CustomKernelOptionMode.ENABLED_Y -> enabledYLabel
+        CustomKernelOptionMode.ENABLED_M -> enabledMLabel
+        CustomKernelOptionMode.DISABLED -> disabledLabel
+        CustomKernelOptionMode.RAW -> rawLabel
+        else -> ignoreLabel
+    }
+    return buildString {
+        append(KernelSupport.normalizeCustomKernelSymbol(option.symbol))
+        append(' ')
+        append(modeLabel)
+        if (option.rawValue.isNotBlank()) {
+            append(' ')
+            append(option.rawValue.trim())
+        }
+        option.toWorkflowLine()?.let { workflowLine ->
+            append(' ')
+            append(workflowLine)
+        }
+    }.lowercase(Locale.ROOT)
+}
+
+@Composable
+private fun customKernelOptionModeLabel(mode: String): String = when (CustomKernelOptionMode.normalize(mode)) {
+    CustomKernelOptionMode.ENABLED_Y -> stringResource(R.string.build_kernel_option_mode_y)
+    CustomKernelOptionMode.ENABLED_M -> stringResource(R.string.build_kernel_option_mode_m)
+    CustomKernelOptionMode.DISABLED -> stringResource(R.string.build_kernel_option_mode_disabled)
+    CustomKernelOptionMode.RAW -> stringResource(R.string.build_kernel_option_mode_raw)
+    else -> stringResource(R.string.build_kernel_option_mode_ignore)
+}
+
+@Composable
+private fun buildCustomKernelOptionSubtitle(option: CustomKernelOption): String = when (CustomKernelOptionMode.normalize(option.mode)) {
+    CustomKernelOptionMode.ENABLED_Y -> stringResource(R.string.build_kernel_option_mode_y)
+    CustomKernelOptionMode.ENABLED_M -> stringResource(R.string.build_kernel_option_mode_m)
+    CustomKernelOptionMode.DISABLED -> stringResource(R.string.build_kernel_option_mode_disabled)
+    CustomKernelOptionMode.RAW -> stringResource(R.string.build_kernel_option_raw_summary, option.rawValue)
+    else -> stringResource(R.string.build_kernel_option_mode_ignore)
+}
+
+@Composable
 private fun RenameBuildPlanDialog(
     name: String,
     onNameChange: (String) -> Unit,
@@ -2440,6 +3061,7 @@ private fun buildPlanSummary(config: KernelBuildConfig): String {
     }
     val featureSummary = enabled.ifEmpty { listOf(stringResource(R.string.build_base_config)) }.joinToString("、")
     val externalModuleCount = if (config.useCustomExternalModules) config.customExternalModules.size else 0
+    val kernelOptionCount = config.customKernelOptions.size
     val ksuSummary = when {
         config.kernelsuVariant == KSU_VARIANT_NONE -> ksuVariantDisplayName(config.kernelsuVariant)
         config.kernelsuBranch == KSU_BRANCH_CUSTOM && config.customRef.isNotBlank() ->
@@ -2447,7 +3069,7 @@ private fun buildPlanSummary(config: KernelBuildConfig): String {
         else -> "${config.kernelsuVariant} / ${config.kernelsuBranch}"
     }
     return "${config.kernelVersion}.${config.subLevel} · Android $android · ${config.osPatchLevel}\n" +
-        "$ksuSummary · $featureSummary · ${stringResource(R.string.build_summary_external_modules, externalModuleCount)}"
+        "$ksuSummary · $featureSummary · ${stringResource(R.string.build_summary_external_modules, externalModuleCount)} · ${stringResource(R.string.build_summary_kernel_options, kernelOptionCount)}"
 }
 
 @Composable
@@ -3013,6 +3635,7 @@ private enum class BuildSection {
     KernelVersion,
     KernelSu,
     Features,
+    CustomKernelOptions,
     ZramOptions,
     KpmOptions,
     CustomModules,
@@ -3020,21 +3643,30 @@ private enum class BuildSection {
 }
 
 @Composable
-private fun SectionCard(section: BuildSection, content: @Composable ColumnScope.() -> Unit) {
+private fun SectionCard(
+    section: BuildSection,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    trailingContent: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit = {}
+) {
     ExpressiveSectionCard(
+        modifier = modifier,
         title = when (section) {
             BuildSection.KernelVersion -> stringResource(R.string.build_kernel_version_config)
             BuildSection.KernelSu -> stringResource(R.string.build_kernelsu_config)
             BuildSection.Features -> stringResource(R.string.build_features)
+            BuildSection.CustomKernelOptions -> stringResource(R.string.build_kernel_options_title)
             BuildSection.ZramOptions -> stringResource(R.string.build_zram_options)
             BuildSection.KpmOptions -> stringResource(R.string.build_kpm_options)
             BuildSection.CustomModules -> stringResource(R.string.build_custom_modules)
             BuildSection.OptionalConfig -> stringResource(R.string.build_optional_config)
         },
-        subtitle = when (section) {
+        subtitle = subtitle ?: when (section) {
             BuildSection.KernelVersion -> stringResource(R.string.build_section_kernel_desc)
             BuildSection.KernelSu -> stringResource(R.string.build_section_ksu_desc)
             BuildSection.Features -> stringResource(R.string.build_section_features_desc)
+            BuildSection.CustomKernelOptions -> stringResource(R.string.build_section_kernel_options_desc)
             BuildSection.ZramOptions -> stringResource(R.string.build_section_zram_desc)
             BuildSection.KpmOptions -> stringResource(R.string.build_section_kpm_desc)
             BuildSection.CustomModules -> stringResource(R.string.build_section_custom_modules_desc)
@@ -3044,11 +3676,13 @@ private fun SectionCard(section: BuildSection, content: @Composable ColumnScope.
             BuildSection.KernelVersion -> Icons.Default.Memory
             BuildSection.KernelSu -> Icons.Default.Shield
             BuildSection.Features -> Icons.Default.Tune
+            BuildSection.CustomKernelOptions -> Icons.Default.SettingsSuggest
             BuildSection.ZramOptions -> Icons.Default.Compress
             BuildSection.KpmOptions -> Icons.Default.Key
             BuildSection.CustomModules -> Icons.Default.Extension
             else -> Icons.Default.Edit
         },
+        trailingContent = trailingContent,
         content = content
     )
 }

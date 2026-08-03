@@ -2,6 +2,7 @@ package com.abk.kernel.data.repository
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import com.abk.kernel.data.model.APP_UPDATE_LINE_NORMAL
@@ -16,7 +17,16 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "abk_prefs")
+private val KEY_PREFERENCES_RESET_NOTICE = booleanPreferencesKey("preferences_reset_notice")
+
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "abk_prefs",
+    corruptionHandler = ReplaceFileCorruptionHandler {
+        // Keep a marker in the replacement file so the next UI session can
+        // explain why the local preferences disappeared.
+        preferencesOf(KEY_PREFERENCES_RESET_NOTICE to true)
+    },
+)
 
 class PreferencesRepository(private val context: Context) {
 
@@ -56,6 +66,7 @@ class PreferencesRepository(private val context: Context) {
         val KEY_DOWNLOAD_MIRROR_BASE_URL = stringPreferencesKey("download_mirror_base_url")
         val KEY_DOWNLOAD_DIRECTORY = stringPreferencesKey("download_directory")
         val KEY_PREBUILT_GKI_ENABLED = booleanPreferencesKey("prebuilt_gki_enabled")
+        val KEY_ARTIFACT_SIGNING_VERIFICATION_ENABLED = booleanPreferencesKey("artifact_signing_verification_enabled")
         val KEY_FORK_ARTIFACT_SIGNING_PUBLIC_KEY = stringPreferencesKey("fork_artifact_signing_public_key")
         val KEY_FORK_ARTIFACT_SIGNING_RELEASE_TAG = stringPreferencesKey("fork_artifact_signing_release_tag")
         val KEY_FORK_ARTIFACT_SIGNING_SECRET_NAME = stringPreferencesKey("fork_artifact_signing_secret_name")
@@ -115,6 +126,9 @@ class PreferencesRepository(private val context: Context) {
         DownloadDirectoryUtils.normalizeDirectoryPath(it[KEY_DOWNLOAD_DIRECTORY])
     }
     val prebuiltGkiEnabled: Flow<Boolean> = context.dataStore.data.map { it[KEY_PREBUILT_GKI_ENABLED] ?: true }
+    val artifactSigningVerificationEnabled: Flow<Boolean> = context.dataStore.data.map {
+        it[KEY_ARTIFACT_SIGNING_VERIFICATION_ENABLED] ?: true
+    }
     val forkArtifactSigningPublicKey: Flow<String?> = context.dataStore.data.map { it[KEY_FORK_ARTIFACT_SIGNING_PUBLIC_KEY] }
     val forkArtifactSigningReleaseTag: Flow<String?> = context.dataStore.data.map { it[KEY_FORK_ARTIFACT_SIGNING_RELEASE_TAG] }
     val forkArtifactSigningSecretName: Flow<String?> = context.dataStore.data.map { it[KEY_FORK_ARTIFACT_SIGNING_SECRET_NAME] }
@@ -145,6 +159,12 @@ class PreferencesRepository(private val context: Context) {
         }
     }.getOrNull()
 
+    fun readArtifactSigningVerificationEnabledBlocking(): Boolean = runCatching {
+        runBlocking(Dispatchers.IO) {
+            context.dataStore.data.first()[KEY_ARTIFACT_SIGNING_VERIFICATION_ENABLED] ?: true
+        }
+    }.getOrDefault(true)
+
     val termsAcceptedVersion: Flow<Int> = context.dataStore.data.map { it[KEY_TERMS_ACCEPTED_VERSION] ?: 0 }
     val flashFilterJson: Flow<String?> = context.dataStore.data.map { it[KEY_FLASH_FILTER] }
     val ghostFailedRunsJson: Flow<String?> = context.dataStore.data.map { it[KEY_GHOST_FAILED_RUNS] }
@@ -168,6 +188,9 @@ class PreferencesRepository(private val context: Context) {
             ?.filter { it.isNotBlank() }
             ?.toSet()
             .orEmpty()
+    }
+    val preferencesResetNoticePending: Flow<Boolean> = context.dataStore.data.map {
+        it[KEY_PREFERENCES_RESET_NOTICE] ?: false
     }
 
     suspend fun saveToken(token: String) = context.dataStore.edit { it[KEY_ACCESS_TOKEN] = token }
@@ -249,6 +272,18 @@ class PreferencesRepository(private val context: Context) {
         }
     }
     suspend fun setPrebuiltGkiEnabled(v: Boolean) = context.dataStore.edit { it[KEY_PREBUILT_GKI_ENABLED] = v }
+    suspend fun setArtifactSigningVerificationEnabled(v: Boolean) = context.dataStore.edit {
+        it[KEY_ARTIFACT_SIGNING_VERIFICATION_ENABLED] = v
+    }
+    suspend fun saveForkArtifactSigningState(
+        publicKey: String,
+        secretName: String,
+        releaseTag: String,
+    ) = context.dataStore.edit {
+        it[KEY_FORK_ARTIFACT_SIGNING_PUBLIC_KEY] = publicKey
+        it[KEY_FORK_ARTIFACT_SIGNING_SECRET_NAME] = secretName
+        it[KEY_FORK_ARTIFACT_SIGNING_RELEASE_TAG] = releaseTag
+    }
     suspend fun saveForkArtifactSigningPublicKey(value: String) = context.dataStore.edit {
         it[KEY_FORK_ARTIFACT_SIGNING_PUBLIC_KEY] = value
     }
@@ -257,6 +292,11 @@ class PreferencesRepository(private val context: Context) {
     }
     suspend fun saveForkArtifactSigningSecretName(value: String) = context.dataStore.edit {
         it[KEY_FORK_ARTIFACT_SIGNING_SECRET_NAME] = value
+    }
+    suspend fun clearForkArtifactSigningState() = context.dataStore.edit {
+        it.remove(KEY_FORK_ARTIFACT_SIGNING_PUBLIC_KEY)
+        it.remove(KEY_FORK_ARTIFACT_SIGNING_RELEASE_TAG)
+        it.remove(KEY_FORK_ARTIFACT_SIGNING_SECRET_NAME)
     }
     suspend fun setAppUpdateStability(value: String) = context.dataStore.edit {
         it[KEY_APP_UPDATE_STABILITY] = normalizeAppUpdateStability(value)
@@ -304,6 +344,9 @@ class PreferencesRepository(private val context: Context) {
         preferences[KEY_ROOT_GRANT_PROFILE_READ_BLOCKED_PACKAGES] = current + cleanPackage
     }
     suspend fun clearPendingAutoDownloadRunId() = context.dataStore.edit { it.remove(KEY_PENDING_AUTO_DOWNLOAD_RUN_ID) }
+    suspend fun clearPreferencesResetNotice() = context.dataStore.edit {
+        it.remove(KEY_PREFERENCES_RESET_NOTICE)
+    }
 
     private fun workflowStepsVersionKey(lang: String) = intPreferencesKey("workflow_steps_version_$lang")
 
